@@ -1,0 +1,78 @@
+name: Dockerized Linux Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Select Ubuntu version for Docker Build (e.g., 20.04, 22.04)'
+        required: true
+        default: '20.04'
+        type: choice
+        options:
+          - '20.04'
+          - '22.04'
+          - '24.04'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Build scrcpy-server
+        run: |
+          export GRADLE=gradle
+          release/build_server.sh
+
+      - name: Build Linux Client in Docker
+        run: |
+          DOCKER_IMAGE="ubuntu:${{ github.event.inputs.os }}"
+          
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -w /app \
+            -e VERSION=${{ github.ref_name }} \
+            $DOCKER_IMAGE \
+            /bin/bash -c "
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update && apt-get install -y \
+                python3-pip ninja-build nasm pkgconf gcc g++ make \
+                autoconf libtool m4 patch \
+                libsdl2-dev libavcodec-dev libavdevice-dev libavformat-dev \
+                libavutil-dev libswresample-dev libusb-1.0-0-dev \
+                libv4l-dev libudev-dev libjpeg-dev \
+                libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev libxrandr-dev libxss-dev libxxf86vm-dev \
+                libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+                curl git wget ca-certificates unzip
+              
+              pip3 install --upgrade meson
+              
+              export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+              
+              release/build_linux.sh x86_64
+            "
+
+      - name: Fix permissions
+        if: always()
+        run: |
+          # 修复由于 Docker 以 root 身份运行导致的权限问题
+          sudo chown -R $USER:$USER ${{ github.workspace }}
+
+      - name: Package Release
+        run: |
+          release/package_client.sh linux-x86_64 tar.gz
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrcpy-linux-${{ github.event.inputs.os }}
+          path: release/output/
